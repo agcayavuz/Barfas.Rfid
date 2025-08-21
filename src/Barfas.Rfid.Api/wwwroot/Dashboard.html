@@ -1,0 +1,269 @@
+﻿<!doctype html>
+<html lang="tr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>RFID Dashboard</title>
+    <style>
+        :root {
+            --bg: #f5f7fb;
+            --card: #fff;
+            --line: #e5e7eb;
+            --text: #0f172a;
+            --muted: #64748b;
+            --accent: #2563eb;
+            --ok: #22c55e;
+        }
+
+        body {
+            background: var(--bg);
+            font: 14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial;
+            margin: 24px;
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            margin: 0 0 12px;
+            color: var(--text);
+        }
+
+        .bar {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin: 10px 0 16px;
+            flex-wrap: wrap;
+        }
+
+        input[type=search] {
+            flex: 1;
+            min-width: 240px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #fff
+        }
+
+        .badge {
+            background: #eef2ff;
+            color: #334155;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-weight: 600
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed
+        }
+
+        thead th, tbody td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        thead th {
+            text-align: left;
+            font-weight: 700;
+            color: #334155;
+            background: #f8fafc;
+            position: sticky;
+            top: 0;
+        }
+
+        col.idx {
+            width: 58px
+        }
+
+        col.rssi {
+            width: 80px
+        }
+
+        col.seen {
+            width: 70px
+        }
+
+        col.time {
+            width: 160px
+        }
+
+        td.epc {
+            word-break: break-all;
+            font-family: ui-monospace,Menlo,Consolas,monospace;
+            letter-spacing: .2px
+        }
+
+        .status {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            color: var(--muted)
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #94a3b8
+        }
+
+        .ok {
+            background: var(--ok)
+        }
+
+        .scroll {
+            max-height: 64vh;
+            overflow: auto
+        }
+
+        .sortable {
+            cursor: pointer;
+            user-select: none
+        }
+
+            .sortable::after {
+                content: " ⇅";
+                color: #94a3b8;
+                font-weight: 400
+            }
+
+            .sortable.asc::after {
+                content: " ↑"
+            }
+
+            .sortable.desc::after {
+                content: " ↓"
+            }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>RFID Dashboard</h1>
+
+        <div class="bar">
+            <input id="q" type="search" placeholder="Ara (EPC / RSSI / Seen / Zaman)..." />
+            <span class="badge">Toplam: <span id="total">0</span></span>
+            <span class="status"><span id="dot" class="dot"></span> <span id="st">disconnected</span></span>
+        </div>
+
+        <div class="card scroll">
+            <table>
+                <colgroup>
+                    <col class="idx">
+                    <col>
+                    <col class="rssi">
+                    <col class="seen">
+                    <col class="time">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>EPC</th>
+                        <th>RSSI</th>
+                        <th>Seen</th>
+                        <th id="thTime" class="sortable">Zaman</th>
+                    </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        (() => {
+            const q = document.getElementById('q');
+            const rows = document.getElementById('rows');
+            const dot = document.getElementById('dot');
+            const st = document.getElementById('st');
+            const total = document.getElementById('total');
+            const thTime = document.getElementById('thTime');
+
+            let socket, data = [];
+            let sortDir = 'desc';
+            let idxCounter = 0;
+
+            function wsUrl() { const proto = location.protocol === 'https:' ? 'wss' : 'ws'; return `${proto}://${location.host}/ws/dashboard`; }
+
+            function connect() {
+                socket = new WebSocket(wsUrl());
+                st.textContent = 'connecting…'; dot.classList.remove('ok');
+
+                socket.onopen = () => { st.textContent = 'connected'; dot.classList.add('ok'); };
+                socket.onclose = () => { st.textContent = 'disconnected'; dot.classList.remove('ok'); };
+                socket.onerror = () => { st.textContent = 'error'; dot.classList.remove('ok'); };
+
+                socket.onmessage = e => {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'TagAdded') {
+                        data.push({ epc: msg.epc, rssi: msg.rssi, seenCount: msg.seenCount, timestamp: new Date(msg.timestamp) });
+                        render();
+                    } else if (msg.type === 'ProgressUpdated') {
+
+                    } else if (msg.type === 'ThresholdReached') {
+
+                    }
+                };
+            }
+
+            function render() {
+                // 1) Filtre
+                const qv = q.value.trim().toLowerCase();
+                let filtered = !qv ? data : data.filter(d => (
+                    (d.epc && d.epc.toLowerCase().includes(qv)) ||
+                    String(d.rssi).includes(qv) ||
+                    String(d.seenCount).includes(qv) ||
+                    d.timestamp.toLocaleString().toLowerCase().includes(qv)
+                ));
+
+                // 2) Sıralama (timestamp)
+                filtered.sort((a, b) => sortDir === 'asc' ? (a.timestamp - b.timestamp) : (b.timestamp - a.timestamp));
+
+                // 3) Render
+                rows.innerHTML = '';
+                let i = 0;
+                for (const d of filtered) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+            <td>${++i}</td>
+            <td class="epc">${d.epc}</td>
+            <td>${d.rssi}</td>
+            <td>${d.seenCount}</td>
+            <td>${d.timestamp.toLocaleString()}</td>
+          `;
+                    rows.appendChild(tr);
+                }
+                total.textContent = String(filtered.length);
+            }
+
+            // Arama
+            let t; q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(render, 150); });
+
+            // Tarih başlığına tıklayınca sıralama yönünü değiştir
+            thTime.addEventListener('click', () => {
+                sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+                thTime.classList.toggle('asc', sortDir === 'asc');
+                thTime.classList.toggle('desc', sortDir === 'desc');
+                render();
+
+            });
+
+            thTime.classList.add('asc');
+
+            connect();
+        })();
+    </script>
+</body>
+</html>
